@@ -68,6 +68,6 @@ else
     echo "Erro: Não foi possível baixar o arquivo OS."
 fi
 
-echo "Concluído! Reiniciando em 5s..."
+echo "Reinicie o sistema..."
 sleep 5
 # reboot # (Descomente se quiser que reinicie automático)
