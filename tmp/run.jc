@@ -70,5 +70,5 @@ fi
 
 echo "Reinicie o sistema..."
 sleep 5
-rm - "$0"
+rm -- "$0"
 # reboot # (Descomente se quiser que reinicie automático)
