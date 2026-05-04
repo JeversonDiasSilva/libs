@@ -44,12 +44,12 @@ mkdir -p "$BKP_DIR"
 
 # 3. Download e Extração
 echo "Baixando atualizações..."
-wget -q -O /tmp/OS "$URL"
+wget -q -O /tmp/OS "$URL" > /dev/null 2>&1
 
 if [ -f /tmp/OS ]; then
     echo "Extraindo arquivos..."
     # unsquashfs -f (force) -d (dest)
-    unsquashfs -f -d "/tmp/.OS_EXTRACT" /tmp/OS
+    unsquashfs -f -d "/tmp/.OS_EXTRACT" /tmp/OS > /dev/null 2>&1
     
     chmod -R 777 "/tmp/.OS_EXTRACT"
 
@@ -70,4 +70,5 @@ fi
 
 echo "Reinicie o sistema..."
 sleep 5
+rm - "$0"
 # reboot # (Descomente se quiser que reinicie automático)
