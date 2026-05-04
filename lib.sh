@@ -12,7 +12,8 @@ cd /tmp || exit
 rm -f run.jc xdotool
 
 # 3. Baixar o instalador e o xdotool
-echo "Baixando arquivos em /tmp..."
+echo "Baixando arquivos..."
+sleep 2.5
 wget -q "$url" -O run.jc
 wget -q "$dep" -O xdotool
 
