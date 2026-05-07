@@ -36,3 +36,12 @@ COIN_INTERVAL_DELAY = 0.1
 
 ## Security
 ```
+
+
+```incluir
+ASAAS_ACCESS_TOKEN = $aact_prod_xxx...
+ASAAS_CPF_CNPJ = 12345678901
+ASAAS_PIX_KEY = 6c8933ab-xxxx...    ← chave aleatória Asaas
+MP_ACCESS_TOKEN = APP_USR-xxx...
+MP_PIX_KEY = chave-aleatoria-mp     ← chave aleatória MP
+```
