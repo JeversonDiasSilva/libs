@@ -1,0 +1,314 @@
+#!/bin/bash
+# Launcher Arcade Final - Batocera
+# Versão: 2026-03-29
+xdotool getdisplaygeometry mousemove $(xdotool getdisplaygeometry | awk '{print $1-1, $2-1}')
+export DISPLAY=:0
+
+##############################################
+# VARIÁVEIS
+##############################################
+CONTADOR="/userdata/system/.dev/contador.txt"
+TEMPO_FILE="/userdata/system/.dev/tempo_jogo.txt"
+SALDO_FILE="/userdata/system/.dev/saldo.txt"
+BATOCERA_CONF="/userdata/system/batocera.conf"
+SOM_AVISO="/userdata/system/.dev/efeitos_sonoros/insert_coin.plataforma.mp3"
+
+# Lê delay do batocera.conf, padrão 5s
+TEMPO_DELAY_TIMER_SEGUNDOS=$(grep -E '^[[:space:]]*TEMPO_DELAY_TIMER_SEGUNDOS[[:space:]]*=' "$BATOCERA_CONF" \
+    | tail -n 1 | cut -d'=' -f2 | tr -d '[:space:]')
+TEMPO_DELAY_TIMER_SEGUNDOS=${TEMPO_DELAY_TIMER_SEGUNDOS:-5}
+
+# Delay entre jogo e overlay (configurável)
+OVERLAY_DELAY=$(grep -E '^[[:space:]]*OVERLAY_DELAY[[:space:]]*=' "$BATOCERA_CONF" \
+    | tail -n 1 | cut -d'=' -f2 | tr -d '[:space:]')
+OVERLAY_DELAY=${OVERLAY_DELAY:-2}  # padrão 2s
+
+TIMER_PID=""
+
+##############################################
+# MODO COMERCIAL DESATIVADO
+##############################################
+MODO_COMERCIAL_DESATIVADO=$(grep -E '^[[:space:]]*MODO_COMERCIAL_DESATIVADO[[:space:]]*=' "$BATOCERA_CONF" \
+    | tail -n 1 | cut -d'=' -f2 | tr -d '[:space:]')
+MODO_COMERCIAL_DESATIVADO=${MODO_COMERCIAL_DESATIVADO:-0}
+
+if [ "$MODO_COMERCIAL_DESATIVADO" = "1" ]; then
+    echo "🔓 Modo comercial desativado. Iniciando jogo sem restrições..."
+
+    ROM_PATH="$1"
+    if [ -z "$ROM_PATH" ] || [ ! -f "$ROM_PATH" ]; then
+        echo "Erro: Caminho do jogo inválido."
+        exit 1
+    fi
+
+    ##############################################
+    # MONITOR SELECT+START — embutido
+    ##############################################
+    iniciar_select_start_kill() {
+        python3 - <<'END_PYTHON'
+import os, time, sys, subprocess, xml.etree.ElementTree as ET, pygame, fcntl
+
+ES_INPUT_CFG = "/userdata/system/configs/emulationstation/es_input.cfg"
+LOCK_FILE    = "/tmp/ps4_select_start.lock"
+DELAY_LOOP   = 0.01
+
+def garantir_instancia_unica():
+    global lock_handle
+    lock_handle = open(LOCK_FILE, "w")
+    try:
+        fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        sys.exit(0)
+
+def matar_shadps4():
+    print("[HOTKEY] SELECT+START — encerrando shadps4...")
+    subprocess.run(["killall", "-9", "shadps4"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def carregar_ids():
+    select_ids, start_ids = {}, {}
+    if not os.path.exists(ES_INPUT_CFG):
+        return select_ids, start_ids
+    try:
+        root = ET.parse(ES_INPUT_CFG).getroot()
+        for cfg in root.findall("inputConfig"):
+            name = cfg.attrib.get("deviceName", "").strip().lower()
+            for inp in cfg.findall("input"):
+                n    = inp.attrib.get("name", "").lower()
+                id_b = int(inp.attrib.get("id", -1))
+                if n == "select":
+                    select_ids[name] = id_b
+                elif n == "start":
+                    start_ids[name] = id_b
+    except Exception as e:
+        print(f"[ERRO] {e}")
+    return select_ids, start_ids
+
+garantir_instancia_unica()
+pygame.init()
+pygame.joystick.init()
+
+select_ids, start_ids = carregar_ids()
+joysticks = {}
+last_count = -1
+
+while True:
+    count = pygame.joystick.get_count()
+    if count != last_count:
+        joysticks.clear()
+        for i in range(count):
+            js   = pygame.joystick.Joystick(i)
+            js.init()
+            name = js.get_name().strip().lower()
+            if name in select_ids and name in start_ids:
+                joysticks[i] = {"obj": js, "name": name,
+                                "select_id": select_ids[name],
+                                "start_id":  start_ids[name],
+                                "combo": False}
+                print(f"[JOY] {name} mapeado")
+            else:
+                # fallback: tenta índices padrão SDL (select=6 start=7 na maioria)
+                nb = js.get_numbuttons()
+                sel_id = 6 if nb > 6 else (nb - 2 if nb >= 2 else 0)
+                sta_id = 7 if nb > 7 else (nb - 1 if nb >= 1 else 0)
+                joysticks[i] = {"obj": js, "name": name,
+                                "select_id": sel_id,
+                                "start_id":  sta_id,
+                                "combo": False}
+                print(f"[JOY] {name} sem mapeamento, fallback sel={sel_id} sta={sta_id}")
+        last_count = count
+
+    pygame.event.pump()
+
+    for js_data in joysticks.values():
+        try:
+            js  = js_data["obj"]
+            sel = js_data["select_id"]
+            sta = js_data["start_id"]
+            if js.get_button(sel) and js.get_button(sta):
+                if not js_data["combo"]:
+                    matar_shadps4()
+                    js_data["combo"] = True
+            else:
+                js_data["combo"] = False
+        except pygame.error:
+            pass
+
+    time.sleep(DELAY_LOOP)
+END_PYTHON
+    }
+
+    trap 'kill "$MONITOR_PID" 2>/dev/null; killall -9 shadps4 2>/dev/null' EXIT SIGINT SIGTERM
+
+    # Inicia monitor em background
+    iniciar_select_start_kill &
+    MONITOR_PID=$!
+
+    # Lança o jogo e aguarda
+    ps4 -f true -g "$ROM_PATH" &
+    GAME_PID=$!
+    wait "$GAME_PID"
+
+    kill "$MONITOR_PID" 2>/dev/null
+    exit 0
+fi
+
+
+##############################################
+# FUNÇÃO DE ENCERRAMENTO TOTAL
+##############################################
+encerrar_tudo() {
+    echo "💀 Encerrando jogo e overlay..."
+
+    pkill -9 -f eden 2>/dev/null
+    pkill -9 -f sudachi 2>/dev/null
+    pkill -9 -f 2wo 2>/dev/null
+    killall -9 shadps4 2>/dev/null   # <-- encerra shadps4
+    [ -n "$TIMER_PID" ] && kill -9 "$TIMER_PID" 2>/dev/null
+
+    rm -f "$TEMPO_FILE"  /userdata/system/.dev/coin
+    #rm -f "$TEMPO_FILE" "$SALDO_FILE" /userdata/system/.dev/coin
+    echo "✅ Tudo finalizado."
+}
+
+trap encerrar_tudo EXIT SIGINT SIGTERM
+
+##############################################
+# FUNÇÃO PYTHON ALT+F4
+##############################################
+iniciar_alt_f4() {
+    python3 - <<'END_PYTHON'
+import keyboard, os
+
+arquivos = ["/userdata/system/.dev/coin", "/userdata/system/.dev/tempo_jogo.txt"]
+
+def remover():
+    for f in arquivos:
+        try:
+            os.remove(f)
+        except: pass
+    os._exit(0)
+
+keyboard.add_hotkey('alt+f4', remover)
+keyboard.wait()
+END_PYTHON
+}
+
+iniciar_alt_f4 &
+
+##############################################
+# VERIFICA CRÉDITOS + SALDO
+##############################################
+if [ ! -f "$CONTADOR" ]; then
+    echo "Arquivo contador não encontrado!"
+    exit 1
+fi
+
+count=$(cat "$CONTADOR" 2>/dev/null)
+count=${count:-0}
+
+saldo_valor=0
+if [ -f "$SALDO_FILE" ]; then
+    saldo_valor=$(cat "$SALDO_FILE" 2>/dev/null)
+    saldo_valor=${saldo_valor:-0}
+fi
+
+if [ "$count" -le 0 ] && [ "$saldo_valor" -le 0 ]; then
+    echo "Sem créditos e sem saldo."
+    mpv /userdata/system/.dev/efeitos_sonoros/insert_coin.wav &
+    exit 0
+fi
+
+USANDO_SALDO=0
+if [ "$saldo_valor" -gt 0 ]; then
+    echo "$saldo_valor" > "$TEMPO_FILE"
+    USANDO_SALDO=1
+else
+    count=$((count - 1))
+    echo "$count" > "$CONTADOR"
+fi
+
+##############################################
+# TEMPO POR CRÉDITO
+##############################################
+TEMPO_JOGO_MINUTOS=$(grep -E '^[[:space:]]*TEMPO_JOGO_MINUTOS[[:space:]]*=' "$BATOCERA_CONF" \
+    | tail -n 1 | cut -d'=' -f2 | tr -d '[:space:]')
+TEMPO_JOGO_MINUTOS=${TEMPO_JOGO_MINUTOS:-5}
+
+TEMPO_JOGO_SEGUNDOS=$((TEMPO_JOGO_MINUTOS * 60))
+
+if [ "$USANDO_SALDO" -eq 0 ]; then
+    echo "$TEMPO_JOGO_SEGUNDOS" > "$TEMPO_FILE"
+    echo "$TEMPO_JOGO_SEGUNDOS" > "$SALDO_FILE"
+fi
+
+##############################################
+# FUNÇÃO DE CONTAGEM REGRESSIVA
+##############################################
+decrementa_tempo_jogo() {
+    sleep "$TEMPO_DELAY_TIMER_SEGUNDOS"
+
+    local estava_abaixo_59=0
+
+    while true; do
+        [ ! -f "$TEMPO_FILE" ] && break
+
+        tempo=$(cat "$TEMPO_FILE")
+        [[ ! "$tempo" =~ ^[0-9]+$ ]] && break
+
+        # Toca som e cria QR ao entrar na zona <=59 (inclusive se já começar nela)
+        if [ "$tempo" -le 59 ] && [ "$tempo" -gt 0 ] && [ "$estava_abaixo_59" -eq 0 ]; then
+            echo "⚠  ${tempo}s restantes — criando QR e tocando aviso!"
+            echo "" > /userdata/system/.dev/configs/qr
+            mpv --no-terminal --really-quiet "$SOM_AVISO" &
+            estava_abaixo_59=1
+        fi
+
+        # Oculta QR se tempo voltar acima de 59 (ex: ganhou crédito)
+        if [ "$tempo" -gt 59 ]; then
+            estava_abaixo_59=0
+            rm -f /userdata/system/.dev/configs/qr
+        fi
+
+        if [ "$tempo" -le 0 ]; then
+            echo "⏰ Tempo esgotado!"
+            echo "0" > "$SALDO_FILE"
+            encerrar_tudo
+            break
+        fi
+
+        tempo=$((tempo - 1))
+        echo "$tempo" > "$TEMPO_FILE"
+        echo "$tempo" > "$SALDO_FILE"
+
+        sleep 1
+    done
+}
+
+decrementa_tempo_jogo &
+TIMER_PID=$!
+
+##############################################
+# LANÇA O JOGO + OVERLAY SINCRONIZADO
+##############################################
+ROM_PATH="$1"
+if [ -z "$ROM_PATH" ] || [ ! -f "$ROM_PATH" ]; then
+    echo "Erro: Caminho do jogo inválido."
+    exit 1
+fi
+
+# Inicia o jogo primeiro
+ps4 -f true -g "$ROM_PATH" &
+
+# Delay antes de iniciar overlay
+sleep "$OVERLAY_DELAY"
+
+# Inicia overlay
+2wo >/dev/null 2>&1 &
+
+##############################################
+# AGUARDA ENCERRAMENTO
+##############################################
+wait
+rm -f /userdata/system/.dev/configs/qr
+exit 0

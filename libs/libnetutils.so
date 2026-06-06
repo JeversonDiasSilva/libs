@@ -1,0 +1,1164 @@
+#!/usr/bin/python3.14
+
+import os
+import sys
+import subprocess
+import customtkinter as ctk
+import requests
+import qrcode
+import socket
+import re
+import traceback
+import base64
+import io
+from datetime import datetime
+from PIL import Image
+
+ctk.set_appearance_mode("dark")
+
+ASAAS_API_URL = "https://api.asaas.com/v3"
+# Para sandbox/testes, use: "https://sandbox.asaas.com/api/v3"
+
+# ── LOG HELPER ───────────────────────────────────────────────────────────────
+def log(nivel, msg):
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    prefixos = {
+        "INFO":  "\033[96m[INFO ]\033[0m",
+        "OK":    "\033[92m[ OK  ]\033[0m",
+        "WARN":  "\033[93m[WARN ]\033[0m",
+        "ERROR": "\033[91m[ERROR]\033[0m",
+        "STEP":  "\033[95m[STEP ]\033[0m",
+        "NET":   "\033[94m[ NET ]\033[0m",
+    }
+    prefixo = prefixos.get(nivel, f"[{nivel}]")
+    print(f"{ts} {prefixo} {msg}", flush=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RetroVending(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.withdraw()
+
+        log("INFO", "=== RetroVending iniciando (ASAAS) ===")
+
+        # Caminhos
+        self.path_token = "/usr/lib/liblinuxenv.so"
+        self.path_conf = "/userdata/system/batocera.conf"
+        self.path_base = "/userdata/system/.dev"
+        self.path_som = os.path.join(self.path_base, "efeitos_sonoros/coins.mp3")
+        self.path_tempo_jogo = os.path.join(self.path_base, "tempo_jogo.txt")
+        self.path_coin       = os.path.join(self.path_base, "coin")
+        self.path_qr_force   = os.path.join(self.path_base, "QR")
+        self.path_qr_ctrl    = os.path.join(self.path_base, "configs/qr")
+        self.path_pos_normal = os.path.join(self.path_base, "posicao_janela.txt")
+        self.path_pos_jogo = os.path.join(self.path_base, "posicao_janela_jogo.txt")
+        self.path_es_input = os.path.join(self.path_base, "es_input.cfg")
+        self.path_customer = os.path.join(self.path_base, ".asaas_customer_id")
+
+        log("INFO", f"Ambiente: token={'OK' if os.path.exists(self.path_token) else 'AUSENTE'} | conf={'OK' if os.path.exists(self.path_conf) else 'AUSENTE'} | base={'OK' if os.path.exists(self.path_base) else 'AUSENTE'}")
+
+        # Estado
+        self.qr_size = 250
+        self.valor_pix = 0.0
+        self.creditos_pix = 0
+        self.pix_habilitado = False
+        self.pix_atual = ""
+        self.pix_encoded_image = ""
+        self.gerando_agora = False
+        self.online = False
+        self.modo_venda_em_jogo = None
+        self.em_jogo_raw = False          # True = configs/qr + jogo ativo
+        self.payment_id_atual = ""
+        self.tempo_menu = 5
+        self.vigia_after_id = None
+        self.ciclo_agendado = False
+        self.customer_id = ""
+        self.cpf_cnpj_cache = ""
+        self.redimensionar_after_id = None
+        self.visual_atualizando = False
+        self.monitor_token = 0
+        self.jogo_ativo_confirmado = False
+        self.jogo_ativo_contador = 0
+        self.modo_estatico = False        # True = usa QR estático (sem valor mínimo)
+        self.qr_estatico_id = ""          # ID do QR estático ativo
+        self.pix_address_key = ""         # chave aleatória cadastrada na conta
+
+        # TOKEN CACHE
+        self.token_atual_cache = self.carregar_token_customizado()
+        token_preview = self.token_atual_cache[:16] + "..." if len(self.token_atual_cache) > 16 else self.token_atual_cache
+        if self.token_atual_cache:
+            log("OK",    f"Token carregado: {token_preview}")
+        else:
+            log("ERROR", "Token VAZIO! Verifique o arquivo de token.")
+
+        self.cpf_cnpj_cache = self.carregar_cpf_cnpj()
+        if self.cpf_cnpj_cache:
+            log("OK", f"CPF/CNPJ carregado: ***{self.cpf_cnpj_cache[-4:]}")
+        else:
+            log("WARN", "CPF/CNPJ não configurado. Configure PIX_CPF_CNPJ no batocera.conf.")
+
+        self.pix_address_key = self.carregar_chave_pix()
+        if self.pix_address_key:
+            log("OK", f"Chave PIX carregada: {self.pix_address_key[:8]}...")
+
+        # Janela
+        self.overrideredirect(True)
+        self.configure(fg_color="black")
+
+        self.lbl_valor = ctk.CTkLabel(self, text="", text_color="white", fg_color="black", font=("Arial", 16, "bold"))
+        self.lbl_valor.pack(side="top", fill="x", pady=(5, 2))
+
+        self.qr_display = ctk.CTkLabel(self, text="", fg_color="black")
+        self.qr_display.pack(side="top", expand=True, fill="both")
+
+        self.lbl_fichas = ctk.CTkLabel(self, text="", text_color="white", fg_color="black", font=("Arial", 14, "bold"))
+        self.lbl_fichas.pack(side="bottom", fill="x", pady=(2, 5))
+
+        for widget in [self, self.lbl_valor, self.qr_display, self.lbl_fichas]:
+            widget.bind("<ButtonPress-1>", self.iniciar_arrasto)
+            widget.bind("<B1-Motion>", self.movimentar_janela)
+            widget.bind("<ButtonRelease-1>", self.salvar_configuracoes_janela)
+
+        self.qr_display.bind("<Button-4>", self.redimensionar)
+        self.qr_display.bind("<Button-5>", self.redimensionar)
+
+        log("INFO", "Janela criada. Iniciando vigia de segurança...")
+        # Lê modo estático ANTES da limpeza
+        try:
+            if os.path.exists(self.path_conf):
+                with open(self.path_conf, "r") as _f:
+                    _c = _f.read()
+                _m = re.search(r"^PIX_ASAAS_STATIC\s*=\s*([\w]+)", _c, re.M)
+                if _m and _m.group(1).strip().lower() == "true":
+                    self.modo_estatico = True
+                    log("INFO", "Modo estático — limpeza DESATIVADA.")
+        except Exception:
+            pass
+        self._limpar_cobrancas_pendentes()
+        self.vigia_de_seguranca()
+
+
+    # ── LIMPEZA DE COBRANÇAS PENDENTES AO INICIAR ────────────────────────────
+    def _limpar_cobrancas_pendentes(self):
+        """Cancela apenas cobranças PENDING/OVERDUE geradas por este script.
+        Filtra por externalReference 'vending_' para nunca tocar em cobranças de outros sistemas."""
+        if not self.token_atual_cache:
+            return
+        if self.modo_estatico:
+            log("INFO", "Modo estático — limpeza ignorada.")
+            return
+        try:
+            log("INFO", "Verificando cobranças pendentes anteriores do RetroVending...")
+            canceladas_total = 0
+
+            for status in ("PENDING", "OVERDUE"):
+                # Filtra apenas cobranças com externalReference iniciando em 'vending_'
+                offset = 0
+                while True:
+                    resp = requests.get(
+                        f"{ASAAS_API_URL}/payments",
+                        params={"status": status, "limit": 100, "offset": offset},
+                        headers=self._headers(),
+                        timeout=15
+                    )
+                    if resp.status_code != 200:
+                        log("WARN", f"Falha ao listar cobranças {status}: HTTP {resp.status_code}")
+                        break
+
+                    data = resp.json()
+                    pagamentos = data.get("data", [])
+                    if not pagamentos:
+                        break
+
+                    for p in pagamentos:
+                        pid = p.get("id", "")
+                        ref = p.get("externalReference", "") or ""
+                        if not pid:
+                            continue
+                        # Só cancela cobranças geradas por este script
+                        if not ref.startswith("vending_"):
+                            continue
+                        # Nunca cancela a cobrança ativa atual
+                        if pid == self.payment_id_atual:
+                            log("INFO", f"Pulando cobrança ativa: {pid}")
+                            continue
+                        try:
+                            r = requests.delete(
+                                f"{ASAAS_API_URL}/payments/{pid}",
+                                headers=self._headers(),
+                                timeout=10
+                            )
+                            if r.status_code in (200, 204):
+                                canceladas_total += 1
+                                log("OK", f"Cobrança {status} cancelada: {pid} [{ref}]")
+                            else:
+                                log("WARN", f"Falha ao cancelar {pid}: HTTP {r.status_code}")
+                        except Exception as e:
+                            log("WARN", f"Erro ao cancelar {pid}: {e}")
+
+                    if not data.get("hasMore", False):
+                        break
+                    offset += 100
+
+            if canceladas_total == 0:
+                log("INFO", "Nenhuma cobrança RetroVending pendente encontrada.")
+            else:
+                log("OK", f"Limpeza concluída: {canceladas_total} cobrança(s) cancelada(s).")
+
+        except Exception as e:
+            log("WARN", f"_limpar_cobrancas_pendentes: {e}")
+
+    # ── ASAAS headers ────────────────────────────────────────────────────────
+    def _headers(self):
+        return {
+            "accept": "application/json",
+            "content-type": "application/json",
+            "access_token": self.token_atual_cache,
+        }
+
+    # ── CLIENTE ASAAS (auto) ─────────────────────────────────────────────────
+    def obter_ou_criar_cliente(self):
+        """Retorna customer_id. Busca ou cria cliente na Asaas automaticamente.
+        Persiste o ID em .asaas_customer_id para não criar duplicatas."""
+
+        # 1. Cache em memória
+        if self.customer_id:
+            return self.customer_id
+
+        # 2. Cache em disco — valida contra a API
+        if os.path.exists(self.path_customer):
+            try:
+                with open(self.path_customer, "r") as f:
+                    cid = f.read().strip()
+                if cid.startswith("cus_"):
+                    resp = requests.get(
+                        f"{ASAAS_API_URL}/customers/{cid}",
+                        headers=self._headers(),
+                        timeout=10
+                    )
+                    if resp.status_code == 200:
+                        self.customer_id = cid
+                        log("OK", f"Customer validado na API: {cid}")
+                        return self.customer_id
+                    else:
+                        log("WARN", f"Customer {cid} inválido para este token (HTTP {resp.status_code}). Recriando...")
+                        os.remove(self.path_customer)
+            except Exception as e:
+                log("WARN", f"Validando customer cache: {e}")
+
+        # 3. Busca na API pelo CPF/CNPJ real (evita duplicatas)
+        cpf_cnpj = self.cpf_cnpj_cache or "07506399000126"  # fallback CNPJ Asaas se não configurado
+        try:
+            resp = requests.get(
+                f"{ASAAS_API_URL}/customers",
+                params={"cpfCnpj": cpf_cnpj, "limit": 1},
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code == 200:
+                items = resp.json().get("data", [])
+                if items:
+                    cid = items[0]["id"]
+                    self.customer_id = cid
+                    self._salvar_customer_id(cid)
+                    log("OK", f"Customer existente encontrado: {cid}")
+                    return self.customer_id
+        except Exception as e:
+            log("WARN", f"Buscando customer: {e}")
+
+        # 4. Cria novo cliente com CPF/CNPJ real
+        try:
+            resp = requests.post(
+                f"{ASAAS_API_URL}/customers",
+                json={
+                    "name": "RetroVending",
+                    "cpfCnpj": cpf_cnpj,
+                    "externalReference": "retrovending_anonimo",
+                    "notificationDisabled": True,
+                },
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code in (200, 201):
+                cid = resp.json().get("id", "")
+                if cid:
+                    self.customer_id = cid
+                    self._salvar_customer_id(cid)
+                    log("OK", f"Novo customer criado: {cid}")
+                    return self.customer_id
+            log("ERROR", f"Falha ao criar customer: HTTP {resp.status_code} — {resp.text[:300]}")
+        except Exception as e:
+            log("ERROR", f"Criando customer: {e}")
+
+        return ""
+
+    def _salvar_customer_id(self, cid):
+        try:
+            with open(self.path_customer, "w") as f:
+                f.write(cid)
+            subprocess.Popen(["batocera-save-overlay"])
+        except Exception as e:
+            log("WARN", f"Salvando customer id: {e}")
+
+    # ── PIX_KEY → TOKEN ──────────────────────────────────────────────────────
+    def _salvar_conf_seguro(self, novas_linhas):
+        """Salva o batocera.conf com escrita atômica e backup de segurança.
+        Nunca sobrescreve se o conteúdo novo for menor que 80% do original."""
+        try:
+            conteudo_novo = "".join(novas_linhas)
+
+            # Lê tamanho atual para comparar
+            tamanho_atual = os.path.getsize(self.path_conf) if os.path.exists(self.path_conf) else 0
+
+            # Proteção: recusa escrita se novo conteúdo for menos de 80% do original
+            if tamanho_atual > 0 and len(conteudo_novo) < tamanho_atual * 0.8:
+                log("ERROR", f"ABORTANDO escrita no conf! Conteúdo reduziu de {tamanho_atual} para {len(conteudo_novo)} bytes — possível corrupção.")
+                return False
+
+            # Backup antes de qualquer escrita
+            path_backup = self.path_conf + ".bak"
+            try:
+                import shutil
+                shutil.copy2(self.path_conf, path_backup)
+            except Exception as e:
+                log("WARN", f"Falha ao criar backup do conf: {e}")
+
+            # Escrita atômica: escreve em .tmp e depois renomeia
+            path_tmp = self.path_conf + ".tmp"
+            with open(path_tmp, 'w') as f:
+                f.write(conteudo_novo)
+
+            # Verifica se o .tmp foi escrito corretamente
+            tamanho_tmp = os.path.getsize(path_tmp)
+            if tamanho_tmp < len(conteudo_novo) * 0.9:
+                log("ERROR", f"Falha na escrita do .tmp ({tamanho_tmp} bytes). Abortando.")
+                os.remove(path_tmp)
+                return False
+
+            os.replace(path_tmp, self.path_conf)
+            return True
+
+        except Exception as e:
+            log("ERROR", f"_salvar_conf_seguro: {e}")
+            return False
+
+    def processar_pix_key(self):
+        try:
+            with open(self.path_conf, 'r') as f:
+                linhas = f.readlines()
+
+            if not linhas:
+                log("WARN", "processar_pix_key: conf vazio, abortando.")
+                return
+
+            pix_key = None
+            novas_linhas = []
+            encontrou = False
+
+            for linha in linhas:
+                if linha.strip().startswith("PIX_KEY"):
+                    match = re.search(r'PIX_KEY\s*=\s*"(.*?)"', linha)
+                    if match:
+                        pix_key = match.group(1)
+                        log("INFO", f"PIX_KEY encontrada no conf: {pix_key[:16]}...")
+                    novas_linhas.append('PIX_KEY= ""\n')
+                    encontrou = True
+                    continue
+                novas_linhas.append(linha)
+
+            if not encontrou:
+                resultado = []
+                inserido = False
+                for linha in novas_linhas:
+                    resultado.append(linha)
+                    if linha.strip().startswith("PIX_ON") and not inserido:
+                        resultado.append('PIX_KEY= ""\n')
+                        inserido = True
+                novas_linhas = resultado
+
+            if not self._salvar_conf_seguro(novas_linhas):
+                log("ERROR", "processar_pix_key: falha ao salvar conf, abortando.")
+                return
+
+            if pix_key:
+                novo_token = f"ASAAS_ACCESS_TOKEN = {pix_key}\n"
+                antigo = ""
+                if os.path.exists(self.path_token):
+                    with open(self.path_token, "r") as f:
+                        antigo = f.read()
+                if novo_token not in antigo:
+                    # Substitui ou adiciona a linha do token
+                    if "ASAAS_ACCESS_TOKEN" in antigo:
+                        novo_conteudo = re.sub(r"ASAAS_ACCESS_TOKEN\s*=.*\n", novo_token, antigo)
+                    else:
+                        novo_conteudo = antigo + novo_token
+                    with open(self.path_token, "w") as f:
+                        f.write(novo_conteudo)
+                    log("OK", "Token atualizado em liblinuxenv.so")
+                    subprocess.Popen(["batocera-save-overlay"])
+        except Exception as e:
+            log("ERROR", f"processar_pix_key: {e}")
+
+    # ── PIX_CPF_CNPJ → liblinuxenv.so ────────────────────────────────────────
+    def processar_cpf_cnpj(self):
+        """Lê PIX_CPF_CNPJ do batocera.conf, salva no liblinuxenv.so e limpa o conf."""
+        try:
+            with open(self.path_conf, 'r') as f:
+                linhas = f.readlines()
+
+            if not linhas:
+                log("WARN", "processar_cpf_cnpj: conf vazio, abortando.")
+                return
+
+            cpf_cnpj = None
+            novas_linhas = []
+            encontrou = False
+
+            for linha in linhas:
+                if linha.strip().startswith("PIX_CPF_CNPJ"):
+                    match = re.search(r'PIX_CPF_CNPJ\s*=\s*"(.*?)"', linha)
+                    if match:
+                        cpf_cnpj = re.sub(r'\D', '', match.group(1))  # só dígitos
+                        if cpf_cnpj:
+                            log("INFO", f"PIX_CPF_CNPJ encontrado no conf: ***{cpf_cnpj[-4:]}")
+                    novas_linhas.append('PIX_CPF_CNPJ= ""\n')
+                    encontrou = True
+                    continue
+                novas_linhas.append(linha)
+
+            if not encontrou:
+                resultado = []
+                inserido = False
+                for linha in novas_linhas:
+                    resultado.append(linha)
+                    if linha.strip().startswith("PIX_ON") and not inserido:
+                        resultado.append('PIX_CPF_CNPJ= ""\n')
+                        inserido = True
+                novas_linhas = resultado
+
+            if not self._salvar_conf_seguro(novas_linhas):
+                log("ERROR", "processar_cpf_cnpj: falha ao salvar conf, abortando.")
+                return
+
+            if cpf_cnpj:
+                # Lê conteúdo atual do liblinuxenv.so
+                conteudo_atual = ""
+                if os.path.exists(self.path_token):
+                    with open(self.path_token, "r") as f:
+                        conteudo_atual = f.read()
+
+                # Substitui ou adiciona linha ASAAS_CPF_CNPJ
+                nova_linha = f"ASAAS_CPF_CNPJ = {cpf_cnpj}\n"
+                if "ASAAS_CPF_CNPJ" in conteudo_atual:
+                    novo_conteudo = re.sub(r"ASAAS_CPF_CNPJ\s*=.*\n", nova_linha, conteudo_atual)
+                else:
+                    novo_conteudo = conteudo_atual + nova_linha
+
+                if novo_conteudo != conteudo_atual:
+                    with open(self.path_token, "w") as f:
+                        f.write(novo_conteudo)
+                    log("OK", f"CPF/CNPJ salvo em liblinuxenv.so")
+                    subprocess.Popen(["batocera-save-overlay"])
+
+        except Exception as e:
+            log("ERROR", f"processar_cpf_cnpj: {e}")
+
+    def carregar_cpf_cnpj(self):
+        """Lê ASAAS_CPF_CNPJ do liblinuxenv.so."""
+        if os.path.exists(self.path_token):
+            try:
+                with open(self.path_token, "r") as f:
+                    for linha in f:
+                        if linha.strip().startswith("ASAAS_CPF_CNPJ"):
+                            valor = linha.split("=", 1)[1].strip().replace('"', '').replace("'", "")
+                            return re.sub(r'\D', '', valor)
+            except Exception as e:
+                log("ERROR", f"carregar_cpf_cnpj: {e}")
+        return ""
+
+    def verificar_cpf_cnpj(self):
+        """Se CPF/CNPJ mudou, invalida customer_id para recriar com novo documento."""
+        novo = self.carregar_cpf_cnpj()
+        if novo != self.cpf_cnpj_cache:
+            log("INFO", f"CPF/CNPJ alterado — resetando customer_id.")
+            self.cpf_cnpj_cache = novo
+            self.customer_id = ""
+            if os.path.exists(self.path_customer):
+                try:
+                    os.remove(self.path_customer)
+                    log("INFO", "Cache de customer_id removido (CPF/CNPJ mudou).")
+                except Exception as e:
+                    log("WARN", f"Removendo customer cache: {e}")
+
+    def verificar_token(self):
+        novo = self.carregar_token_customizado()
+        if novo != self.token_atual_cache:
+            log("INFO", "Token alterado — resetando customer_id e chave PIX.")
+            self.token_atual_cache = novo
+            self.customer_id = ""
+            self.pix_address_key = ""
+            if os.path.exists(self.path_customer):
+                try:
+                    os.remove(self.path_customer)
+                    log("INFO", "Cache de customer_id removido.")
+                except Exception as e:
+                    log("WARN", f"Removendo customer cache: {e}")
+            # Remove chave PIX do disco — pertence à conta anterior
+            try:
+                if os.path.exists(self.path_token):
+                    conteudo = open(self.path_token).read()
+                    if "ASAAS_PIX_KEY" in conteudo:
+                        novo_conteudo = re.sub(r"ASAAS_PIX_KEY\s*=.*\n", "", conteudo)
+                        with open(self.path_token, "w") as f:
+                            f.write(novo_conteudo)
+                        log("INFO", "Chave PIX removida do disco (token mudou).")
+            except Exception as e:
+                log("WARN", f"Removendo chave PIX do disco: {e}")
+
+    # ── CONTADOR ─────────────────────────────────────────────────────────────
+    def somar_creditos_arquivo(self, quantidade):
+        caminhos = [
+            os.path.join(self.path_base, "contador.txt"),
+            os.path.join(self.path_base, ".contador.txt")
+        ]
+        for caminho in caminhos:
+            try:
+                valor = 0
+                if os.path.exists(caminho):
+                    with open(caminho, "r") as f:
+                        c = f.read().strip()
+                        if c.isdigit():
+                            valor = int(c)
+                novo = valor + quantidade
+                tmp = caminho + ".tmp"
+                with open(tmp, "w") as f:
+                    f.write(str(novo))
+                os.replace(tmp, caminho)
+                log("OK", f"Contador [{os.path.basename(caminho)}]: {valor} → {novo}")
+            except Exception as e:
+                log("WARN", f"somar_creditos [{caminho}]: {e}")
+
+    def ajustar_geometria(self, x, y):
+        altura_total = self.qr_size + 60
+        self.geometry(f"{self.qr_size}x{altura_total}+{x}+{y}")
+
+    def carregar_token_customizado(self):
+        if os.path.exists(self.path_token):
+            try:
+                with open(self.path_token, "r") as f:
+                    for linha in f:
+                        if linha.strip().startswith("ASAAS_ACCESS_TOKEN"):
+                            return linha.split("=", 1)[1].strip().replace('"', '').replace("'", "")
+            except Exception as e:
+                log("ERROR", f"carregar_token: {e}")
+        return ""
+
+    def obter_configuracoes_pix(self):
+        padroes = {"PIX_VALOR": "2,00", "PIX_QUANTIDADE_CRÈDITOS": "2", "TEMPO_MENU_SEGUNDOS": "5", "PIX_ON": "true", "PIX_ASAAS_STATIC": "false"}
+        valores = {}
+        if os.path.exists(self.path_conf):
+            with open(self.path_conf, "r") as f:
+                conteudo = f.read()
+                for c in padroes:
+                    match = re.search(rf"^{c}\s*=\s*([\w,\.]+)", conteudo, re.M)
+                    valores[c] = match.group(1).strip().lower() if match else padroes[c].lower()
+        novo_v   = float(valores["PIX_VALOR"].replace(",", "."))
+        novo_c   = int(valores["PIX_QUANTIDADE_CRÈDITOS"])
+        novo_on  = (valores["PIX_ON"] == "true")
+        novo_est = (valores["PIX_ASAAS_STATIC"] == "true")
+        # Detecta mudança de modo estático/dinâmico
+        if novo_est != self.modo_estatico:
+            log("INFO", f"Modo PIX alterado: {'Estático sem mínimo' if novo_est else 'Dinâmico'}")
+            self.modo_estatico = novo_est
+            self.pix_atual = ""
+            self.pix_encoded_image = ""
+            self.gerando_agora = False
+            self.ciclo_agendado = False
+            self.monitor_token += 1
+            self.after(0, self.cancelar_cobranca_anterior)
+        if (novo_v != self.valor_pix or novo_c != self.creditos_pix or novo_on != self.pix_habilitado):
+            log("INFO", f"Config PIX: valor=R${novo_v:.2f} créditos={novo_c} habilitado={novo_on}")
+            # Se PIX foi desabilitado, cancela cobrança ativa imediatamente
+            if not novo_on and self.pix_habilitado:
+                log("WARN", "PIX desabilitado — cancelando cobrança ativa se houver.")
+                self.pix_atual = ""
+                self.pix_encoded_image = ""
+                self.gerando_agora = False
+                self.monitor_token += 1
+                self.after(0, self.cancelar_cobranca_anterior)
+            # Se valor ou créditos mudaram, cancela e gera nova cobrança
+            elif (novo_v != self.valor_pix or novo_c != self.creditos_pix) and self.valor_pix != 0.0:
+                log("WARN", f"Valor/créditos alterados — cancelando cobrança atual e gerando nova.")
+                self.pix_atual = ""
+                self.pix_encoded_image = ""
+                self.gerando_agora = False
+                self.ciclo_agendado = False
+                self.monitor_token += 1
+                self.after(0, self.cancelar_cobranca_anterior)
+            self.valor_pix = novo_v
+            self.creditos_pix = novo_c
+            self.pix_habilitado = novo_on
+            self.tempo_menu = int(valores["TEMPO_MENU_SEGUNDOS"])
+            # Não chama atualizar_status_visual aqui — será chamado pelo ciclo_pagamento
+
+    def vigia_de_seguranca(self):
+        # Cancela agendamento anterior para garantir uma única instância
+        if self.vigia_after_id is not None:
+            try:
+                self.after_cancel(self.vigia_after_id)
+            except Exception:
+                pass
+            self.vigia_after_id = None
+
+        self.obter_configuracoes_pix()
+
+        status_net = self.teste_real_internet()
+
+        # Lógica de exibição do QR:
+        # 1. Nenhum dos 3 existe → menu/idle → mostra
+        # 2. configs/qr + (tempo_jogo OU coin) → mostra
+        # 3. Qualquer outro caso → oculta
+        _qr    = os.path.exists(self.path_qr_ctrl)
+        _jogo  = os.path.exists(self.path_tempo_jogo)
+        _coin  = os.path.exists(self.path_coin)
+        _jogo_ou_coin = _jogo or _coin
+
+        if not _qr and not _jogo and not _coin:
+            qr_ativo_raw = True    # menu/idle — nenhum arquivo existe
+            self.em_jogo_raw = False
+        elif _qr and _jogo_ou_coin:
+            qr_ativo_raw = True    # configs/qr + jogo ativo
+            self.em_jogo_raw = True
+        else:
+            qr_ativo_raw = False   # qualquer outro estado
+            self.em_jogo_raw = False
+
+        # Debounce: só aplica ao MOSTRAR (evita flicker)
+        # Ao OCULTAR: imediato — sem debounce
+        if qr_ativo_raw == self.jogo_ativo_confirmado:
+            self.jogo_ativo_contador = 0
+        elif not qr_ativo_raw:
+            # Ocultar → imediato
+            self.jogo_ativo_confirmado = False
+            self.jogo_ativo_contador = 0
+        else:
+            # Mostrar → debounce de 4 ciclos (~1 segundo)
+            self.jogo_ativo_contador += 1
+            if self.jogo_ativo_contador >= 4:
+                self.jogo_ativo_confirmado = True
+                self.jogo_ativo_contador = 0
+
+        qr_ativo = self.jogo_ativo_confirmado
+
+        if qr_ativo != self.modo_venda_em_jogo:
+            log("INFO", f"Modo alterado: qr_ativo={qr_ativo}")
+            self.withdraw()
+            self.modo_venda_em_jogo = qr_ativo
+            px, py, sz = self.carregar_configuracoes_janela()
+            self.qr_size = sz
+            self.ajustar_geometria(px, py)
+            if not self.gerando_agora and not self.pix_atual:
+                self.pix_encoded_image = ""
+                self.online = False
+                self.ciclo_agendado = False
+
+        deve_exibir = status_net and self.pix_habilitado and qr_ativo
+
+        if not deve_exibir:
+            if self.winfo_viewable():
+                log("WARN", f"Ocultando janela. net={status_net} hab={self.pix_habilitado} qr={qr_ativo}")
+                self.withdraw()
+        else:
+            if not self.winfo_viewable():
+                if self.pix_atual or self.pix_encoded_image:
+                    log("INFO", "configs/qr presente — reexibindo QR existente.")
+                    px, py, sz = self.carregar_configuracoes_janela()
+                    self.qr_size = sz
+                    self.ajustar_geometria(px, py)
+                    self.update_idletasks()
+                    self.atualizar_status_visual()
+                    self.deiconify()
+                elif not self.gerando_agora and not self.ciclo_agendado:
+                    self.online = True
+                    self.ciclo_agendado = True
+                    delay = self.tempo_menu * 1000
+                    log("NET", f"Internet OK. Agendando ciclo_pagamento em {delay}ms")
+                    self.after(delay, self.ciclo_pagamento)
+
+        self.vigia_after_id = self.after(250, self.vigia_de_seguranca)
+
+    # ── CANCELAR COBRANÇA ANTERIOR ───────────────────────────────────────────
+    def cancelar_cobranca_anterior(self):
+        if not self.payment_id_atual:
+            return
+        pid = self.payment_id_atual
+        self.payment_id_atual = ""
+        try:
+            resp = requests.delete(
+                f"{ASAAS_API_URL}/payments/{pid}",
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code in (200, 204):
+                log("OK", f"Cobrança anterior cancelada: {pid}")
+            else:
+                log("WARN", f"Falha ao cancelar {pid}: HTTP {resp.status_code} — {resp.text[:200]}")
+        except Exception as e:
+            log("WARN", f"Exceção ao cancelar cobrança {pid}: {e}")
+
+    # ── MODO ESTÁTICO — chave aleatória, sem valor mínimo ────────────────────
+    def carregar_chave_pix(self):
+        """Lê ASAAS_PIX_KEY do liblinuxenv.so."""
+        if os.path.exists(self.path_token):
+            try:
+                with open(self.path_token, "r") as f:
+                    for linha in f:
+                        if linha.strip().startswith("ASAAS_PIX_KEY"):
+                            return linha.split("=", 1)[1].strip().replace('"', '').replace("'", "")
+            except Exception as e:
+                log("WARN", f"carregar_chave_pix: {e}")
+        return ""
+
+    def _salvar_chave_pix(self, chave):
+        """Persiste ASAAS_PIX_KEY no liblinuxenv.so."""
+        try:
+            nova_linha = f"ASAAS_PIX_KEY = {chave}\n"
+            conteudo_atual = ""
+            if os.path.exists(self.path_token):
+                with open(self.path_token, "r") as f:
+                    conteudo_atual = f.read()
+            if "ASAAS_PIX_KEY" in conteudo_atual:
+                novo_conteudo = re.sub(r"ASAAS_PIX_KEY\s*=.*\n", nova_linha, conteudo_atual)
+            else:
+                novo_conteudo = conteudo_atual + nova_linha
+            if novo_conteudo != conteudo_atual:
+                with open(self.path_token, "w") as f:
+                    f.write(novo_conteudo)
+                log("OK", f"Chave PIX salva em liblinuxenv.so: {chave[:8]}...")
+                subprocess.Popen(["batocera-save-overlay"])
+        except Exception as e:
+            log("WARN", f"_salvar_chave_pix: {e}")
+
+    def obter_ou_criar_chave_pix(self):
+        """Retorna a chave aleatória (EVP). Carrega do disco, depois da API, cria se não existir."""
+        if self.pix_address_key:
+            return self.pix_address_key
+
+        # 1. Cache em disco (liblinuxenv.so)
+        chave_disco = self.carregar_chave_pix()
+        if chave_disco:
+            self.pix_address_key = chave_disco
+            log("OK", f"Chave PIX carregada do disco: {chave_disco[:8]}...")
+            return self.pix_address_key
+
+        # 2. Busca na API
+        try:
+            resp = requests.get(
+                f"{ASAAS_API_URL}/pix/addressKeys",
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code == 200:
+                keys = resp.json().get("data", [])
+                if keys:
+                    self.pix_address_key = keys[0].get("key", "")
+                    log("OK", f"Chave PIX carregada da API: {self.pix_address_key[:8]}...")
+                    self._salvar_chave_pix(self.pix_address_key)
+                    return self.pix_address_key
+        except Exception as e:
+            log("WARN", f"Buscando chave PIX: {e}")
+
+        # 3. Cria nova chave aleatória
+        try:
+            resp = requests.post(
+                f"{ASAAS_API_URL}/pix/addressKeys",
+                json={"type": "EVP"},
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code in (200, 201):
+                self.pix_address_key = resp.json().get("key", "")
+                log("OK", f"Chave PIX criada: {self.pix_address_key[:8]}...")
+                self._salvar_chave_pix(self.pix_address_key)
+                return self.pix_address_key
+            log("ERROR", f"Falha ao criar chave PIX: HTTP {resp.status_code} — {resp.text[:200]}")
+        except Exception as e:
+            log("ERROR", f"Criando chave PIX: {e}")
+        return ""
+
+    def ciclo_pagamento_estatico(self):
+        """Ciclo usando QR Code estático — sem valor mínimo de R$5."""
+        self.ciclo_agendado = False
+        if self.gerando_agora or not self.online:
+            return
+
+        log("STEP", "── Iniciando ciclo estático (sem mínimo) ──")
+        self.processar_pix_key()
+        self.processar_cpf_cnpj()
+        self.verificar_token()
+        self.verificar_cpf_cnpj()
+
+        if not self.token_atual_cache:
+            log("ERROR", "Token vazio!")
+            self.ciclo_agendado = True
+            self.after(10000, self.ciclo_pagamento)
+            return
+
+        chave = self.obter_ou_criar_chave_pix()
+        if not chave:
+            log("ERROR", "Chave PIX não disponível.")
+            self.ciclo_agendado = True
+            self.after(10000, self.ciclo_pagamento)
+            return
+
+        self.gerando_agora = True
+
+        try:
+            log("STEP", f"POST /pix/qrCodes/static  valor=R${self.valor_pix:.2f}")
+            resp = requests.post(
+                f"{ASAAS_API_URL}/pix/qrCodes/static",
+                json={
+                    "addressKey": chave,
+                    "description": f"PIX {self.creditos_pix} Fichas",
+                    "value": round(self.valor_pix, 2),
+                    "format": "ALL",
+                },
+                headers=self._headers(),
+                timeout=10
+            )
+            log("NET", f"POST /pix/qrCodes/static → HTTP {resp.status_code}")
+
+            if resp.status_code not in (200, 201):
+                log("ERROR", f"Falha ao criar QR estático: {resp.status_code} — {resp.text[:300]}")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(10000, self.ciclo_pagamento)
+                return
+
+            data = resp.json()
+            self.qr_estatico_id = data.get("id", "")
+            self.pix_address_key = data.get("addressKey", chave)
+            self.pix_atual = data.get("payload", "")
+            self.pix_encoded_image = data.get("encodedImage", "")
+
+            log("OK", f"QR estático criado! id={self.qr_estatico_id}")
+
+            if self.pix_atual or self.pix_encoded_image:
+                px, py, sz = self.carregar_configuracoes_janela()
+                self.qr_size = sz
+                self.ajustar_geometria(px, py)
+                self.update_idletasks()
+                self.atualizar_status_visual()
+                self.deiconify()
+                self.monitor_token += 1
+                self.monitorar_status_estatico(self.qr_estatico_id, self.monitor_token)
+            else:
+                log("ERROR", "QR estático sem payload/imagem.")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(10000, self.ciclo_pagamento)
+
+        except Exception as e:
+            log("ERROR", f"Exceção no ciclo estático: {e}")
+            log("ERROR", traceback.format_exc())
+            self.gerando_agora = False
+            self.ciclo_agendado = True
+            self.after(10000, self.ciclo_pagamento)
+
+    def monitorar_status_estatico(self, qr_id, token):
+        """Polling: verifica pagamentos recebidos via QR estático."""
+        if token != self.monitor_token:
+            log("INFO", f"monitorar_status_estatico cancelado (token inválido): {qr_id}")
+            return
+        if not self.online:
+            return
+        try:
+            resp = requests.get(
+                f"{ASAAS_API_URL}/payments",
+                params={"pixQrCodeId": qr_id, "status": "RECEIVED"},
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code == 200:
+                pagamentos = resp.json().get("data", [])
+                if pagamentos:
+                    pag = pagamentos[0]
+                    valor_pago = pag.get("value", 0)
+                    log("NET", f"monitorar_estatico qr={qr_id} PAGO! valor=R${valor_pago:.2f}")
+                    # Calcula créditos baseado no valor pago vs valor configurado
+                    if self.valor_pix > 0:
+                        multiplo = max(1, round(valor_pago / self.valor_pix))
+                        creditos = self.creditos_pix * multiplo
+                    else:
+                        creditos = self.creditos_pix
+                    log("OK", f"Entregando {creditos} crédito(s)...")
+                    self.pix_atual = ""
+                    self.pix_encoded_image = ""
+                    self.qr_estatico_id = ""
+                    self.withdraw()
+                    self.entregar_creditos_sequencial(creditos)
+                    return
+                else:
+                    log("NET", f"monitorar_estatico qr={qr_id} status=PENDING")
+            self.after(3000, lambda: self.monitorar_status_estatico(qr_id, token))
+        except Exception as e:
+            log("WARN", f"monitorar_status_estatico erro: {e}")
+            self.after(3000, lambda: self.monitorar_status_estatico(qr_id, token))
+
+    # ── CICLO DE PAGAMENTO ────────────────────────────────────────────────────
+    def ciclo_pagamento(self):
+        self.ciclo_agendado = False
+        if self.gerando_agora or not self.online:
+            return
+        # Modo estático: sem valor mínimo, usa chave aleatória
+        if self.modo_estatico:
+            self.ciclo_pagamento_estatico()
+            return
+
+        log("STEP", "── Iniciando ciclo de pagamento ──")
+        self.processar_pix_key()
+        self.processar_cpf_cnpj()
+        self.verificar_token()
+        self.verificar_cpf_cnpj()
+
+        token_preview = self.token_atual_cache[:16] + "..." if len(self.token_atual_cache) > 16 else "(vazio)"
+        log("INFO", f"Token em uso: {token_preview}")
+
+        if not self.token_atual_cache:
+            log("ERROR", "Token vazio! Abortando ciclo.")
+            self.gerando_agora = False
+            self.ciclo_agendado = True
+            self.after(10000, self.ciclo_pagamento)
+            return
+
+        self.gerando_agora = True
+
+        try:
+            # 0. Cancelar cobrança anterior pendente (se houver)
+            self.cancelar_cobranca_anterior()
+
+            # 0b. Obter/criar customer dinamicamente pelo token
+            customer_id = self.obter_ou_criar_cliente()
+            if not customer_id:
+                log("ERROR", "Não foi possível obter customer_id. Abortando ciclo.")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(15000, self.ciclo_pagamento)
+                return
+
+            # 1. Criar cobrança PIX
+            payload = {
+                "billingType": "PIX",
+                "value": round(self.valor_pix, 2),
+                "dueDate": self._data_hoje(),
+                "description": f"PIX {self.creditos_pix} Fichas",
+                "customer": customer_id,
+                "externalReference": f"vending_{self.creditos_pix}fichas",
+                "postalService": False,
+                "notificationDisabled": True,
+            }
+            log("STEP", f"POST /payments  valor=R${self.valor_pix:.2f} customer={customer_id}")
+
+            resp = requests.post(
+                f"{ASAAS_API_URL}/payments",
+                json=payload,
+                headers=self._headers(),
+                timeout=10
+            )
+
+            log("NET", f"POST /payments → HTTP {resp.status_code}")
+            log("NET", f"Resposta: {resp.text[:600]}")
+
+            if resp.status_code != 200:
+                log("ERROR", f"Falha ao criar cobrança. HTTP {resp.status_code}")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(10000, self.ciclo_pagamento)
+                return
+
+            data = resp.json()
+            payment_id = data.get("id", "")
+            self.payment_id_atual = payment_id
+            log("OK", f"Cobrança criada! payment_id={payment_id} status={data.get('status')}")
+
+            # 2. Buscar QR Code PIX
+            log("STEP", f"GET /payments/{payment_id}/pixQrCode")
+            qr_resp = requests.get(
+                f"{ASAAS_API_URL}/payments/{payment_id}/pixQrCode",
+                headers=self._headers(),
+                timeout=10
+            )
+
+            log("NET", f"GET pixQrCode → HTTP {qr_resp.status_code}")
+            log("NET", f"Resposta QR: {qr_resp.text[:600]}")
+
+            if qr_resp.status_code != 200:
+                log("ERROR", f"Falha ao buscar QR Code. HTTP {qr_resp.status_code}")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(10000, self.ciclo_pagamento)
+                return
+
+            qr_data = qr_resp.json()
+            self.pix_atual = qr_data.get("payload", "")
+            self.pix_encoded_image = qr_data.get("encodedImage", "")
+
+            if self.pix_atual or self.pix_encoded_image:
+                log("OK", f"QR Code recebido — payload={len(self.pix_atual)}chars  encodedImage={'sim' if self.pix_encoded_image else 'não'}. Exibindo janela...")
+                px, py, sz = self.carregar_configuracoes_janela()
+                self.qr_size = sz
+                self.ajustar_geometria(px, py)
+                self.update_idletasks()
+                self.atualizar_status_visual()
+                self.deiconify()
+                self.monitor_token += 1
+                self.monitorar_status(payment_id, self.monitor_token)
+            else:
+                log("ERROR", f"Payload e encodedImage vazios! Chaves retornadas: {list(qr_data.keys())}")
+                self.gerando_agora = False
+                self.ciclo_agendado = True
+                self.after(10000, self.ciclo_pagamento)
+
+        except Exception as e:
+            log("ERROR", f"Exceção no ciclo_pagamento: {e}")
+            log("ERROR", traceback.format_exc())
+            self.gerando_agora = False
+            self.ciclo_agendado = True
+            self.after(10000, self.ciclo_pagamento)
+
+    def monitorar_status(self, payment_id, token):
+        if token != self.monitor_token:
+            log("INFO", f"monitorar_status cancelado (token inválido): {payment_id}")
+            return
+        if not self.online:
+            return
+        try:
+            resp = requests.get(
+                f"{ASAAS_API_URL}/payments/{payment_id}",
+                headers=self._headers(),
+                timeout=10
+            )
+            if resp.status_code == 200:
+                status = resp.json().get("status", "")
+                log("NET", f"monitorar_status payment={payment_id} status={status}")
+                if status in ("RECEIVED", "CONFIRMED"):
+                    log("OK", f"Pagamento confirmado! ({status}) Entregando {self.creditos_pix} crédito(s)...")
+                    self.pix_atual = ""
+                    self.pix_encoded_image = ""
+                    self.payment_id_atual = ""
+                    self.withdraw()
+                    self.entregar_creditos_sequencial(self.creditos_pix)
+                    return
+            self.after(3000, lambda: self.monitorar_status(payment_id, token))
+        except Exception as e:
+            log("WARN", f"monitorar_status erro: {e}")
+            self.after(3000, lambda: self.monitorar_status(payment_id, token))
+
+    # ── HELPERS ──────────────────────────────────────────────────────────────
+    def _data_hoje(self):
+        from datetime import date
+        return date.today().strftime("%Y-%m-%d")
+
+    # ── RESTANTE INALTERADO ──────────────────────────────────────────────────
+    def entregar_creditos_sequencial(self, restantes):
+        if restantes > 0:
+            if os.path.exists(self.path_som):
+                subprocess.Popen(["mpv", "--no-video", "--really-quiet", self.path_som])
+            self.somar_creditos_arquivo(1)
+            self.after(500, lambda: self.entregar_creditos_sequencial(restantes - 1))
+        else:
+            log("OK", "Todos os créditos entregues.")
+            self.gerando_agora = False
+            self.after(2000, self.ciclo_pagamento)
+
+    def atualizar_status_visual(self):
+        if not self.pix_atual and not self.pix_encoded_image:
+            return
+        if self.visual_atualizando:
+            return
+        self.visual_atualizando = True
+        try:
+            if self.pix_encoded_image:
+                # Usa a imagem PNG já pronta que o ASAAS gerou
+                img_bytes = base64.b64decode(self.pix_encoded_image)
+                img_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                log("OK", f"Usando encodedImage do ASAAS ({img_pil.size[0]}x{img_pil.size[1]}px)")
+            else:
+                # Fallback: gera QR localmente a partir do payload texto
+                log("WARN", "encodedImage ausente, gerando QR localmente a partir do payload...")
+                qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+                qr.add_data(self.pix_atual)
+                qr.make(fit=True)
+                img_pil = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+            img_resized = img_pil.resize((self.qr_size, self.qr_size), Image.LANCZOS)
+            self.img_qr = ctk.CTkImage(light_image=img_resized, dark_image=img_resized, size=(self.qr_size, self.qr_size))
+            self.qr_display.configure(image=self.img_qr)
+            self.lbl_valor.configure(text=f"R${self.valor_pix:.2f}".replace(".", ","))
+            self.lbl_fichas.configure(text=f"créditos: {self.creditos_pix}")
+            log("OK", "QR exibido na janela.")
+        except Exception as e:
+            log("ERROR", f"atualizar_status_visual: {e}")
+        finally:
+            self.visual_atualizando = False
+
+    def teste_real_internet(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            s.connect(("8.8.8.8", 53))
+            s.close()
+            return True
+        except:
+            return False
+
+    def carregar_configuracoes_janela(self):
+        path = self.path_pos_jogo if self.em_jogo_raw else self.path_pos_normal
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    d = f.read().strip().split(",")
+                    return int(d[0]), int(d[1]), int(d[2])
+            except:
+                pass
+        return 500, 200, 250
+
+    def salvar_configuracoes_janela(self, event=None):
+        path = self.path_pos_jogo if self.em_jogo_raw else self.path_pos_normal
+        try:
+            with open(path, "w") as f:
+                f.write(f"{self.winfo_x()},{self.winfo_y()},{self.qr_size}")
+        except:
+            pass
+
+    def iniciar_arrasto(self, event):
+        self.x_off = event.x
+        self.y_off = event.y
+
+    def movimentar_janela(self, event):
+        x = self.winfo_x() + (event.x - self.x_off)
+        y = self.winfo_y() + (event.y - self.y_off)
+        self.geometry(f"+{x}+{y}")
+
+    def redimensionar(self, event):
+        passo = 20
+        self.qr_size = max(120, min(800, self.qr_size + (passo if event.num == 4 else -passo)))
+        self.ajustar_geometria(self.winfo_x(), self.winfo_y())
+        # Debounce: cancela agendamento anterior e espera 150ms sem scroll para renderizar
+        if self.redimensionar_after_id is not None:
+            try:
+                self.after_cancel(self.redimensionar_after_id)
+            except Exception:
+                pass
+        self.redimensionar_after_id = self.after(150, self._redimensionar_aplicar)
+
+    def _redimensionar_aplicar(self):
+        self.redimensionar_after_id = None
+        self.atualizar_status_visual()
+        self.salvar_configuracoes_janela()
+
+
+if __name__ == "__main__":
+    app = RetroVending()
+    app.mainloop()
