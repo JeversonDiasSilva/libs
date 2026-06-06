@@ -152,8 +152,10 @@ elif [[ "$lista_sudachi" == *"$GAME_NAME"* ]]; then
     sudachi "$GAME_PATH" &
 
 else
-    echo "Jogo não encontrado."
-    exit 1
+    echo "Jogo não encontrado no conf — abrindo com Eden (padrão)..."
+    /userdata/system/switch/extra/eden/eden "$GAME_PATH" &
+    sleep 2
+    xdotool key F11
 fi
 
 ##############################################
