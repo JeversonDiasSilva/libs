@@ -273,7 +273,12 @@ decrementa_tempo_jogo() {
         if [ "$tempo" -le 0 ]; then
             echo "⏰ Tempo esgotado!"
             echo "0" > "$SALDO_FILE"
-            encerrar_tudo
+            rm -f /userdata/system/.dev/configs/qr
+            echo "" > "$TEMPO_FILE"
+            sleep 0.5
+            rm -f "$TEMPO_FILE"
+            pkill -9 -f shadps4 2>/dev/null
+            pkill -9 -f 2wo 2>/dev/null
             break
         fi
 
@@ -311,4 +316,7 @@ sleep "$OVERLAY_DELAY"
 ##############################################
 wait
 rm -f /userdata/system/.dev/configs/qr
+echo "" > "$TEMPO_FILE"
+sleep 0.5
+rm -f "$TEMPO_FILE"
 exit 0
