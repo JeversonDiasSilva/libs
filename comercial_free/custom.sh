@@ -100,7 +100,8 @@ else
     echo "Modo comercial ativo. Restaurando configuração padrão de input..."
     if [ -f "$ES_INPUT_TEMPLATE" ]; then
         cp -f "$ES_INPUT_TEMPLATE" "$ES_INPUT"
-        echo "es_input.cfg restaurado a partir do template."
+        echo "es_input.cfg restaurado a partir do template."	
+	/userdata/system/.dev/scripts/jc_processos.sh iniciar
     else
         echo "ERRO: Template $ES_INPUT_TEMPLATE não encontrado!"
     fi
