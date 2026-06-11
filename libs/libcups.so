@@ -1,0 +1,497 @@
+#!/usr/bin/python3.14
+# Curitiba 05 de Janeiro de 2025
+# Editor: Jeverson Dias da Silva ///@JCGAMESCLASSICOS...
+
+import subprocess
+import customtkinter as ctk
+import tkinter.messagebox as msgbox
+import re
+import os
+import shutil
+
+# --- Caminhos ---
+CAMINHO_BATOCERA = "/userdata/system/batocera.conf"
+CAMINHO_ES_SYSTEMS = "/userdata/system/configs/emulationstation/es_systems.cfg"
+CAMINHO_MENU_COMERCIAL = "/userdata/system/.dev/menu"
+
+PROCESSO_ONE = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/one"
+PROCESSO_SIX   = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/six"
+PROCESSO_3REE  = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/3ree"
+PROCESSO_R3REE = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/R3ree"
+
+CAMINHO_ES_INPUT_DEV  = "/userdata/system/.dev/es_input.cfg"
+CAMINHO_ES_INPUT_DEST = "/userdata/system/configs/emulationstation/es_input.cfg"
+EMULATORLAUNCHER      = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/emulatorlauncher"
+EMULATORLAUNCHER_BKP  = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/emulatorlauncher.bkp"
+EMULATORLAUNCHER_PY   = "/usr/bin/emulatorlauncher.py"
+EMULATORLAUNCHER_USR  = "/usr/bin/emulatorlauncher"
+RETROARCH_HACK_0      = "/userdata/system/.dev/configs/.retroarch/0/hack"
+RETROARCH_HACK_1      = "/userdata/system/.dev/configs/.retroarch/1/hack"
+RETROARCH_HACK_DEST   = "/userdata/system/.dev/configs/.retroarch/.es/emulationstation-standalone"
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("dark-blue")
+
+
+class ConfiguradorApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("⚙️ Configurações do Sistema")
+        self.protocol("WM_DELETE_WINDOW", self.fechar)
+
+        # 🔹 Garante que CONFIGS_MODO_JANELA existe no conf
+        self.garantir_config_modo_janela()
+
+        # 🔹 Verifica modo janela ou fullscreen
+        self.janela_mode = self.verificar_modo_janela()
+        if self.janela_mode:
+            self.centralizar_janela()
+            self.resizable(False, False)
+        else:
+            self.geometry(f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}")
+
+        self.configure(padx=20, pady=20)
+
+        self.main_frame = ctk.CTkFrame(self, corner_radius=15)
+        self.main_frame.pack(fill="both", expand=True)
+
+        self.title_label = ctk.CTkLabel(
+            self.main_frame,
+            text="⚙️ Configurações",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            pady=20,
+        )
+        self.title_label.pack()
+
+        # --- FRAME PARA CHECKBOXES ---
+        self.check_frame = ctk.CTkFrame(self.main_frame, corner_radius=10)
+        self.check_frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        # --- CHECKBOX MODO JANELA ---
+        self.modo_janela_var = ctk.BooleanVar(value=self.janela_mode)
+        self.checkbox_modo_janela = ctk.CTkCheckBox(
+            self.check_frame,
+            text="Abrir em Janela (640x480)",
+            variable=self.modo_janela_var,
+            command=self.toggle_modo_janela,
+            font=ctk.CTkFont(size=16),
+        )
+
+        # --- CHECKBOXES EXISTENTES ---
+        self.lista_unica_var = ctk.BooleanVar()
+        self.checkbox_lista_unica = ctk.CTkCheckBox(
+            self.check_frame,
+            text="ATIVAR LISTA ÚNICA",
+            variable=self.lista_unica_var,
+            command=self.toggle_lista_unica,
+            font=ctk.CTkFont(size=16),
+        )
+        self.load_lista_unica()
+
+        self.menu_comercial_var = ctk.BooleanVar()
+        self.checkbox_menu = ctk.CTkCheckBox(
+            self.check_frame,
+            text="MENU COMERCIAL",
+            variable=self.menu_comercial_var,
+            command=self.toggle_menu_comercial,
+            font=ctk.CTkFont(size=16),
+        )
+        self.load_menu_comercial()
+
+        self.modo_comercial_desativado_var = ctk.BooleanVar()
+        self.checkbox_modo_comercial_desativado = ctk.CTkCheckBox(
+            self.check_frame,
+            text="DESATIVAR MODO COMERCIAL",
+            variable=self.modo_comercial_desativado_var,
+            command=self.toggle_modo_comercial_desativado,
+            font=ctk.CTkFont(size=16),
+        )
+        self.load_modo_comercial_desativado()
+
+        # --- ORGANIZA CHECKBOXES ---
+        if self.janela_mode:
+            self.checkbox_modo_janela.pack(side="left", expand=True, padx=5, pady=5)
+            self.checkbox_lista_unica.pack(side="left", expand=True, padx=5, pady=5)
+            self.checkbox_menu.pack(side="left", expand=True, padx=5, pady=5)
+            self.checkbox_modo_comercial_desativado.pack(side="left", expand=True, padx=5, pady=5)
+        else:
+            self.checkbox_modo_janela.pack(fill="x", pady=(5, 5))
+            self.checkbox_lista_unica.pack(fill="x", pady=(5, 5))
+            self.checkbox_menu.pack(fill="x", pady=(5, 5))
+            self.checkbox_modo_comercial_desativado.pack(fill="x", pady=(5, 5))
+
+        # CAMPOS
+        def criar_input(texto):
+            label = ctk.CTkLabel(self.main_frame, text=texto, anchor="w", font=ctk.CTkFont(size=16))
+            label.pack(fill="x", padx=30, pady=(5, 0))
+
+            entry = ctk.CTkEntry(self.main_frame, font=ctk.CTkFont(size=14))
+            entry.pack(fill="x", padx=30, pady=(0, 10))
+            entry.bind("<KeyRelease>", self.verificar_campos)
+            return entry
+
+        self.input_saida = criar_input("⏱️ Tempo sair (segundos):")
+        self.input_creditos = criar_input("💰 Créditos (minutos):")
+        self.input_menu = criar_input("🖥️ Tempo menu (segundos):")
+
+        # FRAME PARA BOTÕES
+        self.botao_frame = ctk.CTkFrame(self.main_frame)
+        self.botao_frame.pack(fill="x", padx=30, pady=(20, 10))
+
+        # BOTÕES
+        self.save_btn = ctk.CTkButton(
+            self.botao_frame,
+            text="💾 Salvar Configurações",
+            command=self.salvar_config,
+            height=45,
+            font=ctk.CTkFont(size=16, weight="bold"),
+        )
+
+        self.exit_btn = ctk.CTkButton(
+            self.botao_frame,
+            text="❌ Fechar",
+            command=self.fechar,
+            height=45,
+            font=ctk.CTkFont(size=16, weight="bold"),
+        )
+
+        # Layout dos botões
+        if self.janela_mode:
+            self.save_btn.pack(side="left", expand=True, fill="x", padx=(0, 10))
+            self.exit_btn.pack(side="left", expand=True, fill="x", padx=(10, 0))
+        else:
+            self.save_btn.pack(fill="x", pady=(0, 10))
+            self.exit_btn.pack(fill="x")
+
+    # --- CENTRALIZAR 640x480 ---
+    def centralizar_janela(self):
+        largura = 680
+        altura = 480
+        x = (self.winfo_screenwidth() // 2) - (largura // 2)
+        y = (self.winfo_screenheight() // 2) - (altura // 2)
+        self.geometry(f"{largura}x{altura}+{x}+{y}")
+
+    # --- Garante CONFIGS_MODO_JANELA existe ---
+    def garantir_config_modo_janela(self):
+        try:
+            with open(CAMINHO_BATOCERA, "r") as f:
+                conteudo = f.read()
+            if "CONFIGS_MODO_JANELA" not in conteudo:
+                if "TEMPO_MENU_SEGUNDOS" in conteudo:
+                    conteudo = re.sub(
+                        r"(TEMPO_MENU_SEGUNDOS\s*=\s*\d+)",
+                        r"\1\nCONFIGS_MODO_JANELA = false",
+                        conteudo
+                    )
+                else:
+                    conteudo += "\nCONFIGS_MODO_JANELA = false\n"
+                with open(CAMINHO_BATOCERA, "w") as f:
+                    f.write(conteudo)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao garantir CONFIGS_MODO_JANELA:\n{e}")
+
+    # --- Lê e retorna True se CONFIGS_MODO_JANELA = true ---
+    def verificar_modo_janela(self):
+        try:
+            with open(CAMINHO_BATOCERA, "r") as f:
+                for linha in f:
+                    if "CONFIGS_MODO_JANELA" in linha:
+                        valor = linha.split("=")[-1].strip().lower()
+                        return valor == "true"
+        except:
+            pass
+        return False
+
+    # --- Alterna true/false no arquivo ao marcar/desmarcar ---
+    def toggle_modo_janela(self):
+        try:
+            valor = "true" if self.modo_janela_var.get() else "false"
+            with open(CAMINHO_BATOCERA, "r") as f:
+                conteudo = f.read()
+            if "CONFIGS_MODO_JANELA" in conteudo:
+                conteudo = re.sub(r"(CONFIGS_MODO_JANELA\s*=\s*)(true|false)", f"\\1{valor}", conteudo)
+            else:
+                conteudo += f"\nCONFIGS_MODO_JANELA = {valor}\n"
+            with open(CAMINHO_BATOCERA, "w") as f:
+                f.write(conteudo)
+            self.destroy()
+            app = ConfiguradorApp()
+            app.mainloop()
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao alterar CONFIGS_MODO_JANELA:\n{e}")
+
+    # --- LOADS EXISTENTES ---
+    def load_lista_unica(self):
+        self.lista_unica_var.set(os.path.exists(CAMINHO_ES_SYSTEMS))
+
+    def toggle_lista_unica(self):
+        try:
+            subprocess.run(["lista_unica"], check=True)
+        except:
+            pass
+
+    def load_menu_comercial(self):
+        self.menu_comercial_var.set(os.path.exists(CAMINHO_MENU_COMERCIAL))
+
+    def toggle_menu_comercial(self):
+        try:
+            one = PROCESSO_ONE
+            six = PROCESSO_SIX
+            one_bak = one + ".bak"
+
+            self.parar_processo(one)
+            self.parar_processo(six)
+
+            if self.menu_comercial_var.get():
+                os.makedirs(os.path.dirname(CAMINHO_MENU_COMERCIAL), exist_ok=True)
+                open(CAMINHO_MENU_COMERCIAL, "w").close()
+
+                if os.path.exists(one) and not os.path.exists(one_bak):
+                    os.rename(one, one_bak)
+
+                if os.path.exists(six):
+                    subprocess.run(["cp", six, one])
+                    subprocess.run(["chmod", "+x", one])
+            else:
+                if os.path.exists(one):
+                    os.remove(one)
+
+                if os.path.exists(one_bak):
+                    os.rename(one_bak, one)
+
+                if os.path.exists(CAMINHO_MENU_COMERCIAL):
+                    os.remove(CAMINHO_MENU_COMERCIAL)
+
+            self.iniciar_processo(one)
+
+        except Exception as e:
+            msgbox.showerror("Erro", str(e))
+
+    def load_modo_comercial_desativado(self):
+        try:
+            with open(CAMINHO_BATOCERA, "r") as f:
+                for linha in f:
+                    if "MODO_COMERCIAL_DESATIVADO" in linha:
+                        valor = linha.split("=")[-1].strip()
+                        self.modo_comercial_desativado_var.set(valor == "1")
+                        return
+        except:
+            pass
+        self.modo_comercial_desativado_var.set(False)
+
+    def toggle_modo_comercial_desativado(self):
+        try:
+            valor = "1" if self.modo_comercial_desativado_var.get() else "0"
+            with open(CAMINHO_BATOCERA, "r") as f:
+                conteudo = f.read()
+
+            tag = "MODO_COMERCIAL_DESATIVADO"
+            nova_linha = f"{tag} = {valor}"
+
+            if tag in conteudo:
+                conteudo = re.sub(
+                    rf"{re.escape(tag)}\s*=\s*[01]",
+                    nova_linha,
+                    conteudo
+                )
+            else:
+                # Insere logo abaixo do cabeçalho A0
+                cabecalho = "# ------------ A0 - CONFIGURAÇÕES DO MODO COMERCIAL RETRO LUXXO----------- #"
+                if cabecalho in conteudo:
+                    conteudo = conteudo.replace(
+                        cabecalho,
+                        f"{cabecalho}\n{nova_linha}"
+                    )
+                else:
+                    conteudo += f"\n{nova_linha}\n"
+
+            with open(CAMINHO_BATOCERA, "w") as f:
+                f.write(conteudo)
+
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao alterar MODO_COMERCIAL_DESATIVADO:\n{e}")
+
+    # --- PROCESSOS ---
+    def parar_processo(self, caminho):
+        try:
+            pids = subprocess.check_output(["pgrep", "-f", caminho]).decode().split()
+            if pids:
+                subprocess.run(["kill", "-9"] + pids)
+        except:
+            pass
+
+    def iniciar_processo(self, caminho):
+        try:
+            subprocess.check_output(["pgrep", "-f", caminho])
+        except subprocess.CalledProcessError:
+            subprocess.Popen([caminho])
+
+    # --- REINICIAR 'ONE' IMEDIATAMENTE ---
+    def reiniciar_one(self):
+        try:
+            pids = subprocess.check_output(["pgrep", "-f", PROCESSO_ONE]).decode().split()
+            if pids:
+                subprocess.run(["kill", "-9"] + pids)
+            subprocess.Popen([PROCESSO_ONE])
+        except subprocess.CalledProcessError:
+            subprocess.Popen([PROCESSO_ONE])
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao reiniciar 'one':\n{e}")
+
+    # --- ENCERRAR PROCESSO COM SEGURANÇA ---
+    def encerrar_processo(self, caminho):
+        try:
+            pids = subprocess.check_output(["pgrep", "-f", caminho]).decode().split()
+            if not pids:
+                return
+            # 🟡 Tenta encerrar normalmente primeiro
+            subprocess.run(["kill"] + pids)
+            subprocess.run(["sleep", "1"])
+            # 🔁 Verifica se ainda está rodando e força
+            try:
+                pids_restantes = subprocess.check_output(["pgrep", "-f", caminho]).decode().split()
+                if pids_restantes:
+                    subprocess.run(["kill", "-9"] + pids_restantes)
+            except subprocess.CalledProcessError:
+                pass  # já morreu
+        except subprocess.CalledProcessError:
+            pass  # processo não encontrado
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao encerrar processo:\n{e}")
+
+    # --- APLICAR MODO COMERCIAL DESATIVADO ---
+    def aplicar_desativar_modo_comercial(self):
+        # 1. Encerra processos
+        self.encerrar_processo(PROCESSO_ONE)
+        subprocess.run(["killall", "-9", "3ree"], stderr=subprocess.DEVNULL)
+        subprocess.run(["killall", "-9", "R3ree"], stderr=subprocess.DEVNULL)
+
+        # 2. Copia es_input.cfg do .dev para o ES
+        try:
+            if os.path.exists(CAMINHO_ES_INPUT_DEV):
+                subprocess.run(["cp", "-f", CAMINHO_ES_INPUT_DEV, CAMINHO_ES_INPUT_DEST], check=True)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao copiar es_input.cfg:\n{e}")
+
+        # 3. Move emulatorlauncher → emulatorlauncher.bkp
+        try:
+            if os.path.exists(EMULATORLAUNCHER) and not os.path.exists(EMULATORLAUNCHER_BKP):
+                os.rename(EMULATORLAUNCHER, EMULATORLAUNCHER_BKP)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao mover emulatorlauncher:\n{e}")
+
+        # 4. Move emulatorlauncher.py → emulatorlauncher
+        try:
+            if os.path.exists(EMULATORLAUNCHER_PY):
+                shutil.move(EMULATORLAUNCHER_PY, EMULATORLAUNCHER_USR)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao mover emulatorlauncher.py:\n{e}")
+
+        # 5. Copia hack do modo free (1)
+        try:
+            subprocess.run(["cp", "-f", RETROARCH_HACK_1, RETROARCH_HACK_DEST], check=True)
+        except Exception as e:
+            msgbox.showerror("Erro", "Erro ao copiar retroarch hack 1: " + str(e))
+
+        # 6. Salva overlay (aguarda finalizar antes de fechar)
+        subprocess.run(["batocera-save-overlay"], env={**os.environ, "PATH": "/usr/bin:/bin:/sbin:/usr/sbin:" + os.environ.get("PATH", "")})
+
+    # --- RESTAURAR MODO COMERCIAL ---
+    def restaurar_modo_comercial(self):
+        # 1. Move emulatorlauncher → emulatorlauncher.py
+        try:
+            if os.path.exists(EMULATORLAUNCHER_USR):
+                shutil.move(EMULATORLAUNCHER_USR, EMULATORLAUNCHER_PY)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao restaurar emulatorlauncher.py:\n{e}")
+
+        # 2. Move emulatorlauncher.bkp → emulatorlauncher
+        try:
+            if os.path.exists(EMULATORLAUNCHER_BKP):
+                os.rename(EMULATORLAUNCHER_BKP, EMULATORLAUNCHER)
+        except Exception as e:
+            msgbox.showerror("Erro", f"Erro ao restaurar emulatorlauncher:\n{e}")
+
+        # 3. Copia hack do modo comercial (0)
+        try:
+            subprocess.run(["cp", "-f", RETROARCH_HACK_0, RETROARCH_HACK_DEST], check=True)
+        except Exception as e:
+            msgbox.showerror("Erro", "Erro ao copiar retroarch hack 0: " + str(e))
+
+        # 4. Garante PATH do bin
+        BIN_DIR = "/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin"
+        os.environ["PATH"] = BIN_DIR + ":" + os.environ.get("PATH", "")
+
+        # 5. Reinicia one, R3ree, 3ree e Launcher_off.sh
+        self.reiniciar_one()
+        subprocess.Popen([PROCESSO_R3REE], cwd=BIN_DIR)
+        subprocess.Popen([PROCESSO_3REE], cwd=BIN_DIR)
+        subprocess.Popen([BIN_DIR + "/Launcher_off.sh"], cwd=BIN_DIR)
+
+        # 6. Salva overlay (aguarda finalizar antes de fechar)
+        subprocess.run(["batocera-save-overlay"])
+
+    # --- CAMPOS ---
+    def verificar_campos(self, event=None):
+        if any([
+            self.input_saida.get().strip(),
+            self.input_creditos.get().strip(),
+            self.input_menu.get().strip()
+        ]):
+            self.save_btn.configure(state="normal")
+        else:
+            self.save_btn.configure(state="disabled")
+
+    # --- SALVAR CONFIGURAÇÕES COM REINÍCIO ---
+    def salvar_config(self):
+        try:
+            with open(CAMINHO_BATOCERA, "r") as f:
+                conteudo = f.read()
+
+            if self.input_creditos.get():
+                conteudo = re.sub(r"TEMPO_JOGO_MINUTOS\s*=\s*\d+",
+                                  f"TEMPO_JOGO_MINUTOS = {self.input_creditos.get()}", conteudo)
+
+            if self.input_saida.get():
+                conteudo = re.sub(r"TEMPO_HOTKEY_SEGUNDOS\s*=\s*\d+",
+                                  f"TEMPO_HOTKEY_SEGUNDOS = {self.input_saida.get()}", conteudo)
+
+            if self.input_menu.get():
+                conteudo = re.sub(r"TEMPO_MENU_SEGUNDOS\s*=\s*\d+",
+                                  f"TEMPO_MENU_SEGUNDOS = {self.input_menu.get()}", conteudo)
+
+            with open(CAMINHO_BATOCERA, "w") as f:
+                f.write(conteudo)
+
+            # 🔹 Reinicia 'one'
+            self.reiniciar_one()
+
+            msgbox.showinfo("Sucesso", "CONFIGURAÇÕES SALVAS! ☕️")
+
+        except Exception as e:
+            msgbox.showerror("Erro", str(e))
+
+    # --- FECHAR ---
+    def fechar(self):
+        try:
+            subprocess.run(["killall", "-9", "pcmanfm", "emulationstation"])
+        except:
+            pass
+        if self.modo_comercial_desativado_var.get():
+            # ✅ Checkbox marcado → aplica todas as ações de desativação
+            subprocess.run(["batocera-save-overlay"])
+            self.aplicar_desativar_modo_comercial()
+        else:
+            # ⬜ Checkbox desmarcado → restaura e reinicia normalmente
+            subprocess.run(["batocera-save-overlay"])
+            self.restaurar_modo_comercial()
+            
+        # 🚀 Executa o custom.sh com o parâmetro "start" para aplicar o modo correto
+        subprocess.run(["/userdata/system/custom.sh", "start"], stderr=subprocess.DEVNULL)
+        self.destroy()
+
+
+if __name__ == "__main__":
+    app = ConfiguradorApp()
+    app.mainloop()
