@@ -6,7 +6,16 @@ rm -f "/userdata/system/.dev/apps/Fightcade/dep/rom/fightcade/on"
 
 
 xdotool getdisplaygeometry mousemove $(xdotool getdisplaygeometry | awk '{print $1-1, $2-1}')
+# Sistema de atualização que deve ser iniciado junto com o sistema.
+status=$(curl -sL https://raw.githubusercontent.com/RetroLuxxo/batocera-upgrade/refs/heads/main/status.txt)
 
+
+if [ "$status" == "on" ]; then
+    echo "realizando upgrade"
+    curl -sL https://raw.githubusercontent.com/RetroLuxxo/batocera-upgrade/refs/heads/main/scripts/atualizar.sh | bash #&& batocera-save-overlay 250 > /dev/null 2>&1 &
+else
+    echo "" &
+fi
 
 ###
 
