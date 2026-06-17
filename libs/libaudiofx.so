@@ -1,5 +1,5 @@
 #!/bin/bash
-# Curitiba 05 de Janeiro de 2025
+# Curitiba 17 de Junho de 2025
 # Editor: Jeverson Dias da Silva   ///@JCGAMESCLASSICOS...
 # Overlay Principal
 rm -f "/userdata/system/.dev/apps/Fightcade/dep/rom/fightcade/on"
