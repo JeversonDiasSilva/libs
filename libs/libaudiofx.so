@@ -1,0 +1,382 @@
+#!/bin/bash
+# Curitiba 05 de Janeiro de 2025
+# Editor: Jeverson Dias da Silva   ///@JCGAMESCLASSICOS...
+# Overlay Principal
+rm -f "/userdata/system/.dev/apps/Fightcade/dep/rom/fightcade/on"
+
+
+xdotool getdisplaygeometry mousemove $(xdotool getdisplaygeometry | awk '{print $1-1, $2-1}')
+
+
+###
+
+############
+
+
+
+# Define a função
+atualizar_e_reiniciar() {
+    local ARQUIVO_ORIGEM="/userdata/system/configs/emulationstation/es_last_input.cfg"
+    local ARQUIVO_DESTINO="/userdata/system/.dev/es_input.cfg"
+    local PROCESSO="/userdata/bios/Machines/SVI - Spectravideo SVI-328 MK2/.1/2/3/4/5/6/7/8/9/10/bin/one"
+
+    # 1. VERIFICAÇÃO PRINCIPAL: Só entra aqui se o arquivo existir
+    if [ -f "$ARQUIVO_ORIGEM" ]; then
+        echo "⚠️  Novo controle detectado em: $ARQUIVO_ORIGEM"
+        
+        # --- ETAPA A: COPIAR O XML COM SEGURANÇA ---
+        
+        # Extrai apenas o bloco <inputConfig>...</inputConfig>
+        NOVO_CONTROLE=$(sed -n '/<inputConfig/,/<\/inputConfig>/p' "$ARQUIVO_ORIGEM")
+
+        if [ -n "$NOVO_CONTROLE" ] && [ -f "$ARQUIVO_DESTINO" ]; then
+            # Faz backup
+            cp "$ARQUIVO_DESTINO" "${ARQUIVO_DESTINO}.bak"
+
+            # Remove a última linha (</inputList>) do destino
+            sed -i '/<\/inputList>/d' "$ARQUIVO_DESTINO"
+
+            # Insere o novo controle e fecha a tag novamente
+            echo "$NOVO_CONTROLE" >> "$ARQUIVO_DESTINO"
+            echo "</inputList>" >> "$ARQUIVO_DESTINO"
+            
+            echo "✅ Configuração copiada com sucesso."
+        else
+            echo "❌ Erro: Conteúdo vazio ou arquivo de destino não encontrado."
+            return 1 
+        fi
+
+        # Remove o arquivo de origem (limpeza)
+        rm "$ARQUIVO_ORIGEM"
+        echo "🗑️  Arquivo temporário removido."
+
+        # --- ETAPA B: REINICIAR O PROCESSO (MÉTODO INSTANTÂNEO) ---
+        
+        echo "🔄 Reiniciando o processo $PROCESSO..."
+        
+        # 1. Mata instantaneamente qualquer instância (Modo Agressivo)
+        pkill -9 -f "$PROCESSO" 2>/dev/null
+
+        # 2. Reinicia imediatamente em background, desconectado do terminal
+        python3 "$PROCESSO" >/dev/null 2>&1 & disown
+        
+        echo "🚀 Processo reiniciado!"
+
+    else
+        # Se o arquivo não existir, não faz nada
+        return 0
+    fi
+}
+
+# --- COMO CHAMAR A FUNÇÃO ---
+atualizar_e_reiniciar
+
+Launcher_off.sh
+
+
+
+
+
+
+
+
+############
+
+# Define os caminhos dos arquivos
+ORIGEM="/userdata/system/configs/emulationstation/es_last_input.cfg"
+DESTINO="/userdata/system/.dev/es_input.cfg"
+
+# Verifica se o arquivo de origem existe
+if [ -f "$ORIGEM" ]; then
+    echo "Arquivo encontrado. Iniciando a cópia..."
+
+    # 1. Armazena o conteúdo do controle (extrai apenas o bloco entre <inputConfig> e </inputConfig>)
+    NOVO_CONTROLE=$(sed -n '/<inputConfig/,/<\/inputConfig>/p' "$ORIGEM")
+
+    # Verifica se conseguiu ler algo
+    if [ -z "$NOVO_CONTROLE" ]; then
+        echo "Erro: O arquivo de origem estava vazio ou inválido."
+        exit 1
+    fi
+
+    # 2. Faz backup do arquivo original antes de mexer
+    cp "$DESTINO" "$DESTINO.backup_seguranca"
+
+    # 3. Remove a última linha do arquivo de destino (que é o </inputList>) para abrir o arquivo
+    sed -i '/<\/inputList>/d' "$DESTINO"
+
+    # 4. Cola o novo controle no final do arquivo
+    echo "$NOVO_CONTROLE" >> "$DESTINO"
+
+    # 5. Fecha o arquivo novamente com a tag correta
+    echo "</inputList>" >> "$DESTINO"
+
+    # 6. Apaga o arquivo de origem (es_last_input.cfg)
+    rm "$ORIGEM"
+
+    echo "Pronto! Controle copiado e arquivo temporário apagado."
+    echo "Se precisar desfazer, use: cp $DESTINO.backup_seguranca $DESTINO"
+
+else
+    echo "Nada a fazer: O arquivo $ORIGEM não existe no momento."
+fi
+
+
+
+
+
+############
+
+###
+
+
+
+
+
+
+
+
+
+
+
+
+
+##############################################################################
+# CONFIGURAÇÕES GERAIS
+##############################################################################
+
+ARQ_TEMPO="/userdata/system/.dev/tempo_jogo.txt"
+ARQ_SALDO="/userdata/system/.dev/saldo.txt"
+
+SOM_AVISO="/userdata/system/.dev/efeitos_sonoros/insert_coin.plataforma.mp3"
+SOM_COIN_TAITO="/userdata/system/.dev/efeitos_sonoros/coins-taito.mp3"
+
+##############################################################################
+# COPIA CONFIG INPUT
+##############################################################################
+
+cp -f /userdata/system/.dev/es_input.cfg /userdata/system/configs/emulationstation/
+
+##############################################################################
+# LIMPEZA DE SAVES
+##############################################################################
+
+SAVE_ROOT="/userdata/saves"
+find "$SAVE_ROOT" -type f -regex '.*\.state[0-9]$' | while read -r file; do
+    dir=$(dirname "$file")
+    base=$(basename "$file")
+    game="${base%%.state*}"
+
+    saves=( $(ls -1t "$dir"/"$game".state[0-9] 2>/dev/null) )
+    [[ ${#saves[@]} -eq 0 ]] && continue
+
+    newest="${saves[0]}"
+    auto_file="$dir/$game.state.auto"
+
+    if [[ -f "$auto_file" ]]; then
+        if [[ "$newest" -nt "$auto_file" ]]; then
+            mv -f "$newest" "$auto_file"
+        else
+            newest="$auto_file"
+        fi
+    else
+        mv -f "$newest" "$auto_file"
+    fi
+
+    for old in "${saves[@]}"; do
+        [[ "$old" != "$newest" ]] && rm -f "$old"
+    done
+done
+
+rm -f /userdata/system/configs/retroarch/retroarchcustom.cfg
+
+##############################################################################
+# LEITURA DE CONTADOR E SALDO
+##############################################################################
+
+count=$(cat /userdata/system/.dev/contador.txt 2>/dev/null)
+count=${count:-0}
+
+saldo_valor=0
+if [ -f "$ARQ_SALDO" ]; then
+    saldo_valor=$(cat "$ARQ_SALDO" 2>/dev/null)
+    saldo_valor=${saldo_valor:-0}
+fi
+
+##############################################################################
+# 2. SISTEMAS ARCADE (SEM TEMPO - EXIGE CRÉDITO)
+##############################################################################
+
+if [[ "$@" == *"atomiswave"* ]] || \
+   [[ "$@" == *"fba_libretro"* ]] || \
+   [[ "$@" == *"fbneo"* ]] || \
+   [[ "$@" == *"mame"* ]] || \
+   [[ "$@" == *"naomi"* ]] || \
+   [[ "$@" == *"nesicalivex1"* ]] || \
+   [[ "$@" == *"nesicalivex2"* ]] || \
+   [[ "$@" == *"taitotype1"* ]] || \
+   [[ "$@" == *"taitotype2"* ]] || \
+   [[ "$@" == *"teknoparrot"* ]]; then
+
+    # 🚫 ARCADE SÓ INICIA SE TIVER CRÉDITO
+    if [ "${count:-0}" -le 0 ]; then
+        echo "Sem crédito para Arcade."
+        Launcher_off.sh
+        mpv /userdata/system/.dev/efeitos_sonoros/insert_coin.wav > /dev/null 2>&1
+        exit 0
+    fi
+
+    echo "" > /userdata/system/.dev/coin
+
+    if [[ "$@" == *"teknoparrot"* ]] || \
+       [[ "$@" == *"taitotype1"* ]] || \
+       [[ "$@" == *"taitotype2"* ]] || \
+       [[ "$@" == *"nesicalivex1"* ]] || \
+       [[ "$@" == *"nesicalivex2"* ]]; then
+        mpv "$SOM_COIN_TAITO" > /dev/null 2>&1 &
+    fi
+
+    /usr/lib/python3.11/site-packages/configgen/emulatorlauncher.py "$@"
+
+    Launcher_off.sh
+    rm -f /userdata/system/.dev/coin
+    exit 0
+fi
+
+##############################################################################
+# 3. CONSOLES (MODO TEMPO)
+##############################################################################
+
+# BLOQUEIO: se contador <= 0 E saldo <= 0 → não inicia
+if [ "${count:-0}" -le 0 ] && [ "${saldo_valor:-0}" -le 0 ]; then
+    Launcher_off.sh
+    mpv /userdata/system/.dev/efeitos_sonoros/insert_coin.wav > /dev/null 2>&1
+    exit 0
+fi
+
+SALDO_EXISTENTE=0
+
+# Se houver saldo > 0 → usa saldo
+if [ "${saldo_valor:-0}" -gt 0 ]; then
+    echo "$saldo_valor" > "$ARQ_TEMPO"
+    SALDO_EXISTENTE=1
+fi
+
+# Se não houver saldo → usa contador
+if [ "$SALDO_EXISTENTE" -eq 0 ]; then
+
+    count=$((count - 1))
+    echo "$count" > /userdata/system/.dev/contador.txt
+
+    CAMINHO_COIN="/userdata/system/batocera.conf"
+
+    if [ -f "$CAMINHO_COIN" ]; then
+        TEMPO_JOGO_MINUTOS=$(grep -oP 'TEMPO_JOGO_MINUTOS\s*=\s*\K\d+' "$CAMINHO_COIN")
+    fi
+
+    TEMPO_JOGO_MINUTOS=${TEMPO_JOGO_MINUTOS:-15}
+    TEMPO_JOGO_SEGUNDOS=$((TEMPO_JOGO_MINUTOS * 60))
+
+    echo "$TEMPO_JOGO_SEGUNDOS" > "$ARQ_TEMPO"
+    echo "$TEMPO_JOGO_SEGUNDOS" > "$ARQ_SALDO"
+fi
+
+##############################################################################
+# FUNÇÃO DE ENCERRAMENTO
+##############################################################################
+
+kill_emulador() {
+    xdotool key alt+F4
+    killall -9 tecladovenv 2>/dev/null
+    killall -9 fc2-electron 2>/dev/null
+    killall -9 fcadefbneo.exe 2>/dev/null
+    killall -9 fcv39.exe 2>/dev/null
+    killall -9 fcadesnes9x.exe 2>/dev/null
+    killall -9 flycast.elf 2>/dev/null
+    killall -9 ggpofba-ng.exe 2>/dev/null
+    dkill
+    rm -f /userdata/system/.dev/coin
+    rm -f /userdata/system/.dev/tempo_jogo.txt
+}
+
+##############################################################################
+# CONTADOR SINCRONIZADO
+##############################################################################
+
+decrementa_tempo_jogo() {
+
+    #sleep 10
+
+    local estava_abaixo_59=0
+
+    while true; do
+
+        [ ! -f "$ARQ_TEMPO" ] && break
+
+        tempo=$(cat "$ARQ_TEMPO" 2>/dev/null)
+        tempo=${tempo:-0}
+
+        # 🔔 Toca se entrar na zona <=59 (inclusive se já começar nela)
+        if [ "$tempo" -le 59 ] && [ "$tempo" -gt 0 ] && [ "$estava_abaixo_59" -eq 0 ]; then
+            echo "" > /userdata/system/.dev/configs/qr
+            mpv "$SOM_AVISO" > /dev/null 2>&1 &
+            estava_abaixo_59=1
+        fi
+
+        # 🔄 Reset se sair da zona (ex: ganhou tempo)
+        if [ "$tempo" -gt 59 ]; then
+            estava_abaixo_59=0
+            rm -f /userdata/system/.dev/configs/qr
+        fi
+
+        if [ "$tempo" -le 0 ]; then
+            echo "0" > "$ARQ_TEMPO"
+            echo "0" > "$ARQ_SALDO"
+            kill_emulador
+            break
+        fi
+
+        tempo=$((tempo - 1))
+
+        echo "$tempo" > "$ARQ_TEMPO.tmp" && mv "$ARQ_TEMPO.tmp" "$ARQ_TEMPO"
+        echo "$tempo" > "$ARQ_SALDO.tmp" && mv "$ARQ_SALDO.tmp" "$ARQ_SALDO"
+
+        sleep 1
+    done
+}
+
+##############################################################################
+# INICIA JOGO + OVERLAY + CONTADOR
+##############################################################################
+
+/usr/lib/python3.11/site-packages/configgen/emulatorlauncher.py "$@" &
+game_pid=$!
+
+2wo &
+pkill unclutter &
+# Mata qualquer instância antiga do contador
+pkill -f decrementa_tempo_jogo 2>/dev/null
+
+# --- BUSCA DELAY NO BATOCERA.CONF ---
+BATOCERA_CONF="/userdata/system/batocera.conf"
+TEMPO_DELAY_TIMER_SEGUNDOS=$(grep -E '^[[:space:]]*TEMPO_DELAY_TIMER_SEGUNDOS[[:space:]]*=' "$BATOCERA_CONF" \
+    | tail -n 1 | cut -d'=' -f2 | tr -d '[:space:]')
+
+# Se não estiver definido ou inválido, usa 5 segundos
+if ! [[ "$TEMPO_DELAY_TIMER_SEGUNDOS" =~ ^[0-9]+$ ]]; then
+    TEMPO_DELAY_TIMER_SEGUNDOS=5
+fi
+
+# --- DELAY ANTES DE INICIAR O CONTADOR ---
+sleep "$TEMPO_DELAY_TIMER_SEGUNDOS"
+decrementa_tempo_jogo &
+timer_pid=$!
+trap '
+    kill "$timer_pid" 2>/dev/null
+' EXIT
+
+wait $game_pid
+
+Launcher_off.sh
+rm -f /userdata/system/.dev/configs/qr
+exit 0
