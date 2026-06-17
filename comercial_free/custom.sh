@@ -16,7 +16,7 @@ LAST_INPUT="/userdata/system/configs/emulationstation/es_last_input.cfg"
 ES_INPUT="/userdata/system/configs/emulationstation/es_input.cfg"
 ES_INPUT_TEMPLATE="/userdata/system/.dev/es_input_livre.cfg"
 
-JC_PROCESSOS="/userdata/system/.dev/scripts/jc_processos.sh"
+JC_PROCESSOS="/userdata/system/.dev/scripts/jc_processos.sh" 
 
 # Lê o valor de MODO_COMERCIAL_DESATIVADO (com ou sem espaços ao redor do =)
 VALOR=$(grep -E "^MODO_COMERCIAL_DESATIVADO\s*=\s*" "$BATOCERA_CONF" | sed 's/.*=\s*//' | tr -d '[:space:]')
@@ -76,7 +76,7 @@ if [ "$VALOR" = "1" ]; then
         echo "Configuração restaurada do backup es_input_livre.bkp"
     else
         echo "AVISO: Backup $ES_INPUT_LIVRE_BKP não encontrado. Mantendo atual."
-	/userdata/system/.dev/scripts/jc_processos.sh
+	/userdata/system/.dev/scripts/jc_processos.sh iniciar
     fi
 
     # Desativa (comenta) as configurações do modo comercial no batocera.conf
